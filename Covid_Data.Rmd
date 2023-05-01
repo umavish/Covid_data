@@ -1,0 +1,667 @@
+---
+title: "Covid_data_analysis"
+author: "null"
+date: "2023-04-21"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+Johns Hopkins University collected data regarding Covid cases in US and all over the world. All the data that was collected is made available in GitHub (https://github.com/CSSEGISandData/COVID-19). In this assignment, I am going to analyse four data sets:  
+1) time_series_covid19_confirmed_US.csv   
+2) time_series_covid19_deaths_US.csv   
+3) time_series_covid19_confirmed_global.csv   
+4) time_series_covid19_deaths_global.csv  
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Step 0: Import libaries 
+
+```{r }
+# Packages and libraries used to run this code
+#remotes::install_cran("tidyverse")
+#install.packages("tidyverse")
+#install.packages('gridExtra')
+#install.packages("zoo")
+#install.packages("maps")
+library(tidyverse)
+library(lubridate)
+library(gridExtra)
+library(maps)
+library(zoo)
+options(readr.show_col_types = FALSE)
+options(warn=-1)
+```
+
+
+## Step 1: Loding Data 
+
+```{r}
+url_in_covid<- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names<-c("time_series_covid19_confirmed_US.csv", 
+              "time_series_covid19_confirmed_global.csv", 
+              "time_series_covid19_deaths_US.csv", 
+              "time_series_covid19_deaths_global.csv")
+
+urls<-str_c(url_in_covid,file_names)
+us_cases<-read_csv(urls[1])
+global_cases<-read_csv(urls[2])
+us_deaths<-read_csv(urls[3])
+global_deaths<-read_csv(urls[4])
+```
+
+Loaded data into four variables us_cases,us_deaths,global_cases and global_deaths
+
+## Step 2: Tidying and Transforming Data
+
+Using pivot_longer in all the data sets to transform the data such that each row corresponds to Covid case data for certain geographic region and date. 
+
+```{r}
+# global_cases data set
+global_cases<-global_cases %>% 
+  pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat, Long), 
+               names_to = "date", 
+               values_to = "cases")
+
+# global_deaths data set
+global_deaths<-global_deaths %>% 
+  pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat, Long), 
+               names_to = "date", 
+               values_to = "deaths")
+
+# us_cases data set
+us_cases<-us_cases %>% 
+  pivot_longer(cols = -(UID:Combined_Key), 
+               names_to = "date", 
+               values_to = "cases")%>% 
+  select(Admin2:cases)%>%
+  mutate(date = mdy(date))
+
+# us_deaths data set
+us_deaths<-us_deaths %>% 
+  pivot_longer(cols = -(UID:Population), 
+               names_to = "date", 
+               values_to = "deaths")%>% 
+  select(Admin2:deaths)%>%
+  mutate(date = mdy(date))
+
+```
+
+Joining global_cases and global_deaths into one data set global
+
+```{r}
+# Joining global_cases and global_deaths
+global<-global_cases %>% 
+  full_join(global_deaths) %>% 
+  rename(Country_Region = `Country/Region`, Province_State = 'Province/State') %>% 
+  mutate(date=mdy(date))
+```
+
+```{r}
+global
+```
+
+```{r}
+# Summary of gobal data set
+summary(global)
+```
+```{r}
+# Filtering out cases less than zero
+global<-global%>%filter(cases>0)
+summary(global)
+```
+It seems total number of global cases is 103802702 and deaths is 1123836.
+
+
+Lets see the maximum number of cases is valid or not 
+
+```{r}
+# seeing cases more than 100million 
+global%>%filter(cases>100000000)
+```
+
+
+Joining us_cases and us_deaths into a single data set us
+
+```{r}
+# Joining us_cases and us_deaths
+us <- us_cases %>% full_join(us_deaths)
+```
+```{r}
+us
+```
+```{r}
+#summary of US data
+summary(us)
+```
+There are some cases less than zero. Lets see those cases.
+
+```{r}
+# who has cases less than zero
+us%>%filter(cases <0 )
+```
+Three records are founds with negative cases. So dropping these records and also dropping records that has cases equal to zero.
+
+```{r}
+#sub-setting cases that are greater than zero
+us <- subset(us,cases >0 )
+summary(us)
+
+```
+We can see that some of the data in the population column has zero. 
+
+```{r}
+#extracting data that has zero population 
+us%>%filter(Population == 0)
+```
+It seems that if Admin2(County) is "Unassigned", population data value is zero. It is not possible to assign a value to population when county is unknown. So this data is valid. 
+
+
+Creating a Combined_Key column in global data set similar to the Combined_Key in us data set 
+```{r}
+global<-global%>%
+  unite("Combined_Key",c(Province_State,Country_Region),sep = ',',
+        na.rm = TRUE,remove = FALSE)
+```
+
+Creating population column in global data set
+
+```{r}
+# loading uid_lookup_url from github
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+uid <- read_csv(uid_lookup_url)
+uid <- uid %>% select(-c(Lat,Long_,Combined_Key,code3,iso2,iso3))
+
+# Adding population column to gobal dataset
+global<-global%>% 
+  left_join(uid,by = c("Province_State","Country_Region"))%>%
+  select(-c(UID,FIPS))%>%
+  select(Province_State,Country_Region,date,cases,deaths,
+         Population,Combined_Key,Lat,Long)
+
+global
+
+
+```
+
+## Step 3: Visualizations and Analysis
+
+### Q1) Lets see the cases in each country 
+
+Dealing with NA values in Province_State column
+```{r}
+#Number of NA's in column Province_State
+sum(is.na(global$Province_State))
+```
+
+Province_State column in the global data set has 60% Na's. So created global_totals data set that drops Province_State column. And adding columns deaths_per_mill, new_cases, and new_deaths.
+```{r}
+# Creating data set global_totals
+# Adding columns new_cases, new_deaths
+global_totals<-global%>%
+  group_by(Country_Region,date)%>%
+  summarize(cases=sum(cases),deaths = sum(deaths),
+            Population = sum(Population))%>% 
+  mutate(deaths_per_mill = deaths*1000000/Population)%>%
+  mutate(new_cases = cases-dplyr::lag(x = cases, n = 1, 
+                                              order_by = date))%>%
+  mutate(new_deaths = deaths-lag(deaths))%>%
+  select(Country_Region,date,cases,new_cases,deaths,new_deaths,deaths_per_mill,
+         Population)%>%
+  ungroup()
+
+
+#global_country_totals has total number of cases in each country
+global_country_totals<- global_totals%>%
+  group_by(Country_Region)%>%
+  summarize(deaths = max(deaths),cases = max(cases),
+            Population = max(Population),
+            cases_per_thou = 1000*cases/Population,
+            deaths_per_thou = 1000*deaths/Population)%>%
+  filter(cases >0, Population>0)%>%
+  ungroup()
+
+#Top 5 countries that has maximum number of cases
+global_country_totals%>%
+  slice_max(cases,n=5)
+```
+These are top 5 countries that has highest number of cases
+
+
+
+```{r}
+# 5 countries that has minimum number of cases 
+global_country_totals%>%
+  slice_min(cases,n=5)
+```
+These are bottom 5 countries that has least number of cases
+
+### Q1) What are the trends of cases for top 5 and bottom 5 countries?
+
+```{r}
+# Sub-setting data that belongs to top 5 countries that has highest number of cases
+global_totals_top5 <- 
+  filter(global_totals, Country_Region == "US" | Country_Region == "India"| 
+           Country_Region == "France"| Country_Region == "Germany"| 
+           Country_Region == "Brazil" )
+# Plot showing Covid-19 Confirmed Cases for top 5 countries 
+# that has highest number of cases 
+p1 <- ggplot(global_totals_top5, 
+             aes(x=date, y=cases, color = Country_Region)) + 
+  geom_point() +
+  geom_line()+
+  scale_color_manual(name='Country',
+                     breaks = c('US', 'India', 'France','Germany','Brazil'),
+                     values = c('US'= "red", 'India'="blue", 'France'="green",
+                                'Germany'="yellow",'Brazil'="purple"))+
+  labs(title = "Covid-19 Confirmed Cases for top5 Countries", 
+       x= "Date", y= "Cummulative cases")
+  
+# Sub-setting data that belongs to bottom 
+# 5 countries that has least number of cases
+global_totals_bottom5 <- 
+  filter(global_totals, Country_Region == "Nauru" | 
+         Country_Region == "Kiribati"| Country_Region == "Tuvalu"|
+         Country_Region == "Holy See"| Country_Region == "Korea, North" ) 
+
+# Plot showing Covid-19 Confirmed Cases for bottom 5 countries 
+# that has least number of cases 
+p2<- ggplot(global_totals_bottom5, 
+            aes(x=date, y=cases, color = Country_Region)) + 
+  geom_point() +
+  geom_line()+
+  scale_color_manual(name='Country',
+                     breaks = c('Nauru', 'Kiribati', 'Tuvalu',
+                                'Holy See','Korea, North'),
+                     values = c('Nauru'= "red", 'Kiribati'="blue", 
+                                'Tuvalu'="green",'Holy See'="yellow",'Korea, 
+                                North'="purple"))+
+  labs(title = "Covid-19 Confirmed Cases for bottom5 Countries", x= "Date",
+       y= "Cummulative cases")
+  
+  
+grid.arrange(p1,p2,nrow =2)
+```
+In the top 5 countries graph it seems cases are almost stabilized by 2023. In the second graph, Covid started in these countries is after 2022, so the count seems much less. North Korea has only one case for the population of 25778815, this indicates that North Korea hasn't reported the cases. 
+
+### Q2) Lets see the trend of cases and deaths in US
+
+Admin2 column in us data set has county details of each state. Lets drop that column using group_by and create consolidated data of us by state.  
+```{r}
+# Consolidating US data by state
+us_by_state<-us%>% 
+  group_by(Province_State,Country_Region,date)%>%
+  summarize(cases=sum(cases),deaths = sum(deaths),
+            Population = sum(Population))%>% 
+  mutate(deaths_per_mill = deaths*1000000/Population)%>%
+  select(Province_State,Country_Region,date,cases,deaths,deaths_per_mill,
+         Population)%>%
+  ungroup()
+
+#For each date adding the counts of cases of all states
+us_totals<-us_by_state%>% 
+  group_by(Country_Region,date)%>%
+  summarize(cases=sum(cases),deaths = sum(deaths),
+            Population = sum(Population))%>% 
+  mutate(deaths_per_mill = deaths*1000000/Population)%>%
+  select(Country_Region,date,cases,deaths,deaths_per_mill,Population)%>%
+  ungroup()
+
+# create column new_cases and new_deaths
+us_by_state<-us_by_state%>% 
+  mutate(new_cases = cases-lag(cases),
+         new_deaths = deaths-lag(deaths))
+
+us_totals <-us_totals%>%
+  mutate(new_cases = cases-lag(cases),
+         new_deaths = deaths-lag(deaths))
+
+# Plotting cases and deaths per each date 
+ggplot(us_totals, aes(x=date, y=cases)) +
+  geom_point(aes(color = "cases")) +
+  geom_point(aes(y=deaths,color="deaths"))+
+  scale_y_log10()+
+  labs(title = "Covid-19 Global Confirmed Cases and Deaths in US", x= "Date", 
+       y= "Daily confirmed cases and deaths")
+```
+Cases and deaths are almost stabilized. Then what about the rate of increase or decrease of new cases and new deaths over time. Is that dropped.
+
+### Q3) Lets see new cases and deaths over time in US
+
+For plotting new_cases and new_deaths graph, I took rolling mean of 7days to get a smooth graph overtime.  
+```{r}
+# Adding rolling mean column for cases and deaths 
+us_totals<-filter(us_totals,new_deaths >= 0 )%>%
+  mutate(death_7d_rollmean = zoo::rollmean(new_deaths, k = 7, fill = NA))%>%
+  mutate(cases_7d_rollmean = zoo::rollmean(new_cases, k = 7, fill = NA))
+#ggplot for US on 7 days rolling_mean of new_cases
+p3<-ggplot(us_totals, aes(x=date, y=cases_7d_rollmean)) +
+  geom_point() +
+  labs(title = " New Cases rolling_mean in US", x= "Date", 
+       y= "7 days rolling_mean of new_cases") 
+
+#ggplot for US on 7 days rolling_mean of new_deaths
+p4<-ggplot(us_totals, aes(x=date, y=death_7d_rollmean)) +
+  geom_point() +
+  labs(title = "New Deaths rolling_mean in US", x= "Date", 
+       y= "7 days rolling_mean of new_deaths")
+grid.arrange(p3,p4,nrow = 1)
+```
+There is peak in new cases in 2022 but now it is reasonably dropped. In case of new deaths, there are peaks in 2021 and in beginning of 2022. Good news is that right now it dropped to much lower levels. 
+
+### Q4) Lets see the situation in the second country(India) that has huge number of cases. 
+```{r}
+# Sub-setting the India data
+global_india<-subset(global,Country_Region == "India")
+
+# new_cases and new_deaths in India
+global_india<-global_india%>% 
+  mutate(new_cases = cases-lag(cases),
+         new_deaths = deaths-lag(deaths))%>%
+  mutate(death_7d_rollmean = zoo::rollmean(new_deaths, k = 15, fill = NA))%>%
+  mutate(cases_7d_rollmean = zoo::rollmean(new_cases, k = 15, fill = NA))
+
+# Plotting cases and deaths per each date 
+ggplot(global_india, aes(x=date, y=cases)) +
+  geom_point(aes(color = "cases")) +
+  geom_point(aes(y=deaths,color="deaths"))+
+  scale_y_log10()+
+  labs(title = "Covid-19 Global Confirmed Cases and Deaths in India", x= "Date", 
+       y= "Confirmed cases and deaths")
+
+```
+Lets see rolling mean of new cases and new deaths over time in India
+```{r}
+#Plot of 7d rolling_mean of new_cases in India
+p5<-ggplot(global_india, aes(x=date, y=cases_7d_rollmean)) +
+  geom_point() +
+  labs(title = "New Cases rolling_mean in India", x= "Date", 
+       y= "7d rolling_mean of new_cases") 
+
+#Plot of 7d rolling_mean of new_deaths in India
+p6<-ggplot(global_india, aes(x=date, y=death_7d_rollmean)) +
+  geom_point() +
+  labs(title = "New deaths rolling_mean in India", x= "Date", 
+       y= "7d rolling_mean of new_deaths")
+
+ 
+grid.arrange(p5,p6,nrow=1)
+
+```
+Initially when Covid started cases and deaths were high but now it dropped significantly. 
+
+
+### Q5) Lets see covid cases in whole world 
+```{r}
+#Cases and Deaths for each day in whole world 
+global_totals_date <- global_totals%>%
+  group_by(date)%>%
+  summarize(cases = sum(cases), deaths = sum(deaths))%>%
+  select(date,cases,deaths)%>%
+  ungroup()
+
+# ggplot for Cases and Deaths in whole world
+ggplot(global_totals_date, aes(x=date, y=cases)) +
+  geom_point(aes(color = "cases")) +
+  geom_point(aes(y=deaths,color="deaths"))+
+  scale_y_log10()+
+  labs(title = "Covid-19 Global Confirmed Cases and Deaths in whole world ", 
+       x= "Date", y= "Daily confirmed cases and deaths")
+
+
+```
+
+Cases and deaths are stabilized over time. It seems all the countries are recovering from the pandemic. 
+
+Lets see covid cases in whole world on a map
+```{r}
+
+#create data for world coordinates using map_data() function
+world_coordinates <- map_data("world")
+  
+# create world map using ggplot() 
+ggplot() +
+# geom_map() function takes world coordinates as input to 
+# plot world map 
+  geom_map(
+    data = world_coordinates, map = world_coordinates,
+    aes(long, lat, map_id = region),
+    color = "green", fill= "lightyellow"
+  )+
+# geom_point function is used to plot scatter plot on top 
+# of world map
+geom_point(
+    data = global,
+    aes(Long,Lat, color = Country_Region,
+        size=cases),
+    alpha = 1
+  )+
+theme(legend.position="none")
+
+```
+We can see which countries suffered the most.
+
+### Q6) Lets see the cases only in US on a map
+
+There are so many Latitude and Longitude points for each state. So sub-setting the data to get one median point for each state and collecting the maximum cases and deaths of each state.
+```{r}
+#cases for each state
+us_state <- us%>%
+  group_by(Province_State)%>%
+  summarize(deaths = max(deaths),cases = max(cases),
+            Population = max(Population),
+            Long_ = median(Long_),Lat=median(Lat))%>%
+  filter(cases >0, Population>0)%>%
+  select(Province_State,cases,deaths,Long_,Lat)
+
+# Top 5 states that has maximum cases
+us_state%>%
+slice_max(cases,n=5)
+```
+
+# Plotting the count of cases in each state in US
+```{r}
+
+state <- map_data("state") 
+# create US map using ggplot() function
+ggplot() +
+# geom_map() function takes state as input
+# to plot US states
+  geom_map(
+    data = state,map = state, 
+    aes(long, lat, map_id = region),
+    color = "green", fill= "lightyellow"
+  )+
+  
+# geom_point function is used to plot scatter plot on top 
+# of world map
+geom_point(
+    data = us_state,
+    aes(Long_,Lat, color = 'red',
+        size=cases),
+    alpha = 1
+    
+  )+
+ xlim(-130,-60)+
+ ylim(25,50)+
+
+theme(legend.position="none")
+
+```
+California, Florida, Illinois, Arizona and Texas are the top 5 states that has maximum number of cases. 
+
+
+We can further analyze to see cases and deaths in each state and see which counties are most effected. We can collect more information regarding gender, age group, recovery details, vaccination details and can do in depth analysis to answer many questions and can also take some important decisions of how to deal with Covid.  
+
+
+## Modeling 
+
+In this section, modeling is done between cases and deaths for each year i.e., 2020Mar-2021Mar,2021Mar-2022Mar,2022Mar-2023Mar. We can see how trends between cases and deaths changed over these 3years. To achieve this, I created a data set us_by_state_year_new, which contains totals of cases and deaths for each state for each year. Year1 contains data form 2020Mar-2021Mar, Year2 from 2021Mar-2022Mar and Year3 from 2022Mar-2023Mar. 
+```{r}
+# Filtering data for each year
+us_by_state_year1 <- filter(us_by_state, date >= as.Date("2020-03-11"), 
+                            date < as.Date("2021-03-11"))
+us_by_state_year2 <- filter(us_by_state, date >= as.Date("2021-03-11"), 
+                            date < as.Date("2022-03-11"))
+us_by_state_year3 <- filter(us_by_state, date >= as.Date("2022-03-11"), 
+                            date < as.Date("2023-03-11"))
+
+# Cases and Deaths totals for year1
+us_by_state_year1_totals<-us_by_state_year1%>% 
+  group_by(Province_State)%>%
+  summarize(cases1=max(cases),deaths1 = max(deaths),
+            Population = max(Population))%>% 
+  select(Province_State,cases1,deaths1,Population)%>%
+  ungroup()
+
+# Cases and Deaths totals for year2
+us_by_state_year2_totals<-us_by_state_year2%>% 
+  group_by(Province_State)%>%
+  summarize(cases2=(max(cases)),
+            deaths2 = max(deaths),Population = max(Population))%>% 
+  select(Province_State,cases2,deaths2,Population)%>%
+  ungroup()
+
+# Cases and Deaths totals for year3
+us_by_state_year3_totals<-us_by_state_year3%>% 
+  group_by(Province_State)%>%
+  summarize(cases3=(max(cases)),
+            deaths3 = max(deaths),Population = max(Population))%>% 
+  select(Province_State,cases3,deaths3,Population)%>%
+  ungroup()
+
+# Joining 3years data 
+us_by_state_year<-us_by_state_year1_totals%>% 
+  left_join(us_by_state_year2_totals,by = c("Province_State","Population"))%>%
+  left_join(us_by_state_year3_totals,by = c("Province_State","Population"))%>%
+  select(Province_State,cases1,deaths1,cases2,deaths2,cases3,deaths3,Population)
+
+# us_by_state_year_new contains information about cases and deaths totals 
+# for all years and well as totals per thousand
+us_by_state_year_new<-us_by_state_year%>%
+  group_by(Province_State,Population)%>%
+  mutate(year1_cases = cases1)%>%
+  mutate(year1_deaths = deaths1)%>%
+  mutate(year2_cases = (cases2 - cases1))%>%
+  mutate(year2_deaths = (deaths2 - deaths1))%>%
+  mutate(year3_cases = (cases3 - cases2))%>%
+  mutate(year3_deaths = (deaths3 - deaths2))%>%
+  mutate(year1_cases_per_thou = cases1*1000/Population)%>%
+  mutate(year1_deaths_per_thou = deaths1*1000/Population)%>%
+  mutate(year2_cases_per_thou = (cases2 - cases1)*1000/Population)%>%
+  mutate(year2_deaths_per_thou = (deaths2 - deaths1)*1000/Population)%>%
+  mutate(year3_cases_per_thou = (cases3 - cases2)*1000/Population)%>%
+  mutate(year3_deaths_per_thou = (deaths3 - deaths2)*1000/Population)%>%
+  select(Province_State,Population,year1_cases,year1_deaths,
+         year2_cases,year2_deaths,year3_cases,
+         year3_deaths,year1_cases_per_thou,year1_deaths_per_thou,
+         year2_cases_per_thou,year2_deaths_per_thou,year3_cases_per_thou,
+         year3_deaths_per_thou)%>%
+  ungroup()
+
+us_by_state_year_new[sapply(us_by_state_year_new, is.infinite)] <- NA 
+
+# Summary of us_by_state_year_new data set
+summary(us_by_state_year_new)
+```
+
+```{r}
+
+# Modeling data between cases and deaths for each year 
+mod1 <- lm(year1_deaths ~ year1_cases, data = us_by_state_year_new)
+mod2 <- lm(year2_deaths ~ year2_cases, data = us_by_state_year_new)
+mod3 <- lm(year3_deaths ~ year3_cases, data = us_by_state_year_new)
+mod4 <- update(mod1, na.action = na.exclude)
+mod5 <- update(mod2, na.action = na.exclude)
+mod6 <- update(mod3, na.action = na.exclude)
+us_by_state_year_new_pred <- us_by_state_year_new%>%
+  mutate(Pred_year1 = predict(mod4))%>%
+  mutate(Pred_year2 = predict(mod5))%>%
+  mutate(Pred_year3 = predict(mod6))
+
+# ggplot for cases and deaths for each year 
+ggplot(us_by_state_year_new_pred)+
+  geom_point( aes(x = year1_cases, y = year1_deaths,color = "red"))+
+  geom_point(aes(x = year2_cases, y = year2_deaths,color = "blue"))+
+  geom_point(aes(x = year3_cases, y = year3_deaths,color = "green"))+
+  geom_line(aes(x=year1_cases,y = Pred_year1), color = "red")+
+  geom_line(aes(x=year2_cases,y = Pred_year2), color = "blue")+
+  geom_line(aes(x=year3_cases,y = Pred_year3), color = "green")+
+  xlab("Cases for years 2020-2021,2021-2022,2022-2023")+
+  ylab("Deaths for years 2020-2021,2021-2022,2022-2023")+
+  scale_color_identity(name='Year',
+                     breaks=c('red', 'blue', 'green'),
+                     labels=c('2020Mar-2021Mar', '2021Mar-2022Mar', 
+                              '2022Mar-2023Mar'),
+                     guide = "legend")
+
+```
+This is the graph between cases and deaths for each year. There are around 50 dots for each year, each dot corresponds to each state in US.
+
+Details of colors:
+1) Red - 2020Mar-2021Mar 
+2) Blue - 2021Mar-2022Mar
+3) Green - 2022Mar-2023Mar
+
+Initially when Covid started cases were slowly increasing and deaths are more too. After that cases are more but deaths started to drop. In the last year, both cases and deaths dropped. Vaccination, mask mandatory, lock down, quarantine and discouraging large gatherings might be some of the reasons why cases and deaths dropped. We can also see that some of the dots have large residuals, like cases are less but deaths are more and vice verse. It might be because we did not consider some parameters that are causing these patterns in the graph. Overall as time progressed cases and deaths are under control and we are coming out of pandemic. 
+
+
+Lets see how cases per thousand and deaths per thousand are related to each other 
+
+```{r}
+# Modeling data between cases and deaths per thousand for each year 
+mod7 <- lm(year1_deaths_per_thou ~ year1_cases_per_thou, 
+           data = us_by_state_year_new)
+mod8 <- lm(year2_deaths_per_thou ~ year2_cases_per_thou, 
+           data = us_by_state_year_new)
+mod9 <- lm(year3_deaths_per_thou ~ year3_cases_per_thou, 
+           data = us_by_state_year_new)
+mod10 <- update(mod7, na.action = na.exclude)
+mod11 <- update(mod8, na.action = na.exclude)
+mod12 <- update(mod9, na.action = na.exclude)
+us_by_state_year_new_pred1 <- us_by_state_year_new%>%
+  mutate(Pred_year1 = predict(mod10))%>%
+  mutate(Pred_year2 = predict(mod11))%>%
+  mutate(Pred_year3 = predict(mod12))
+
+# ggplot for casea and deaths per thousand for each year
+ggplot(us_by_state_year_new_pred1)+
+  geom_point( aes(x = year1_cases_per_thou, y = year1_deaths_per_thou,
+                  color = "red"))+
+  geom_point(aes(x = year2_cases_per_thou, y = year2_deaths_per_thou,
+                 color = "blue"))+
+  geom_point(aes(x = year3_cases_per_thou, y = year3_deaths_per_thou,
+                 color = "green"))+
+  geom_line(aes(x=year1_cases_per_thou,y = Pred_year1), color = "red")+
+  geom_line(aes(x=year2_cases_per_thou,y = Pred_year2), color = "blue")+
+  geom_line(aes(x=year3_cases_per_thou,y = Pred_year3), color = "green")+
+  xlab("Cases per 1000 in years 2020-2021,2021-2022,2022-2023")+
+  ylab("Deaths per 1000 in years 2020-2021,2021-2022,2022-2023")+
+  scale_color_identity(name='Year',
+                     breaks=c('red', 'blue', 'green'),
+                     labels=c('2020Mar-2021Mar', '2021Mar-2022Mar', 
+                              '2022Mar-2023Mar'),
+                     guide = "legend")
+```
+When Covid started, cases increased but as time progressed both cases and deaths dropped. 
+
+
+## Step 4: Conclusion and  Bias Identification
+
+### Conclusion
+1)This data analysis helps to see which countries are most effected and who need more help. This helps policy makers to take important decisions.
+
+2)When we analyze new cases and deaths there are some peaks and some drops. One can do deeper analysis and see what caused these peaks and drops.  
+
+3)We can also see that as time progressed cases and deaths dropped to significantly lower levels. One can study which parameters influenced this drop.
+
+### Bias
+Bias in Covid data can be caused at any stage, it might be while collecting, analyzing, interpreting and data publication. It may lead to false conclusions about relationship between different parameters.   
+ 
+Some countries may not have enough infrastructure to count and report cases in a timely manner. Some might willingly not report their cases. All this adds bias in the data. 
+
+Politics, Vaccination availability, lack of health care,etc might introduce bias in the data.  
